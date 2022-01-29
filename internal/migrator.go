@@ -15,12 +15,13 @@ import (
 )
 
 type Migrator struct {
-	db *sql.DB
-	fs fs.FS
+	db             *sql.DB
+	fs             fs.FS
+	migrationPaths []string
 }
 
-func NewMigrator(db *sql.DB, fs fs.FS) (*Migrator, error) {
-	return &Migrator{db: db, fs: fs}, nil
+func NewMigrator(db *sql.DB, fs fs.FS, migrationPaths []string) (*Migrator, error) {
+	return &Migrator{db: db, fs: fs, migrationPaths: migrationPaths}, nil
 }
 
 func (m *Migrator) Migrate() error {
@@ -35,48 +36,14 @@ func (m *Migrator) Migrate() error {
 		return err
 	}
 
-	appliedMigrations, err := m.selectAppliedMigrations()
-	if err != nil {
-		return err
-	}
+	for {
+		hasMore, err := m.advanceMigration()
+		if err != nil {
+			return err
+		}
 
-	migrations, err := m.loadMigrations()
-	if err != nil {
-		return err
-	}
-
-	for _, migration := range migrations {
-		appliedMigration, migrationApplied := appliedMigrations[migration.rank]
-		if migrationApplied {
-			if appliedMigration.checksum != migration.checksum {
-				return fmt.Errorf("checksum mismatch")
-			}
-
-			if appliedMigration.name != migration.name {
-				return fmt.Errorf("name mismatch")
-			}
-		} else {
-
-			tx, err := m.db.Begin()
-			if err != nil {
-				return err
-			}
-			defer tx.Rollback()
-
-			err = m.applyMigration(tx, migration)
-			if err != nil {
-				return err
-			}
-
-			err = m.markMigrationApplied(tx, migration)
-			if err != nil {
-				return err
-			}
-
-			err = tx.Commit()
-			if err != nil {
-				return err
-			}
+		if !hasMore {
+			break
 		}
 	}
 
@@ -130,34 +97,35 @@ func (m *Migrator) loadMigrations() ([]Migration, error) {
 
 	re := regexp.MustCompile("^.*/?V(\\d+)__(.*).sql")
 
-	basePath := "migrations"
-	fileInfos, err := ioutil.ReadDir(basePath)
-	if err != nil {
-		return nil, err
-	}
-
 	migrations := make([]Migration, 0)
-	for _, fileInfo := range fileInfos {
-
-		match := re.FindStringSubmatch(fileInfo.Name())
-
-		rankStr := match[1]
-		rank, err := strconv.Atoi(rankStr)
-		if err != nil {
-			return nil, err
-		}
-		name := match[2]
-
-		path := fmt.Sprintf("%s/%s", basePath, fileInfo.Name())
-		data, err := ioutil.ReadFile(path)
+	for _, basePath := range m.migrationPaths {
+		fileInfos, err := ioutil.ReadDir(basePath)
 		if err != nil {
 			return nil, err
 		}
 
-		checksum := fmt.Sprintf("{md5}%x", md5.Sum(data))
+		for _, fileInfo := range fileInfos {
 
-		m := Migration{rank: rank, name: name, data: data, checksum: checksum}
-		migrations = append(migrations, m)
+			match := re.FindStringSubmatch(fileInfo.Name())
+
+			rankStr := match[1]
+			rank, err := strconv.Atoi(rankStr)
+			if err != nil {
+				return nil, err
+			}
+			name := match[2]
+
+			path := fmt.Sprintf("%s/%s", basePath, fileInfo.Name())
+			data, err := ioutil.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
+
+			checksum := fmt.Sprintf("{md5}%x", md5.Sum(data))
+
+			m := Migration{rank: rank, name: name, data: data, checksum: checksum}
+			migrations = append(migrations, m)
+		}
 	}
 
 	sort.Sort(MigrationCollection(migrations))
@@ -170,8 +138,8 @@ func (m *Migrator) createMigrationSchema() error {
 	return err
 }
 
-func (m *Migrator) selectAppliedMigrations() (map[int]AppliedMigration, error) {
-	rows, err := m.db.Query("select rank, name, checksum from Migration order by rank asc")
+func (m *Migrator) selectAppliedMigrations(tx *sql.Tx) (map[int]AppliedMigration, error) {
+	rows, err := tx.Query("select rank, name, checksum from Migration order by rank asc for update")
 	if err != nil {
 		return nil, err
 	}
@@ -215,4 +183,56 @@ func (m *Migrator) isDbPostgresql() error {
 	}
 
 	return nil
+}
+
+func (m *Migrator) advanceMigration() (bool, error) {
+
+	tx, err := m.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	appliedMigrations, err := m.selectAppliedMigrations(tx)
+	if err != nil {
+		return false, err
+	}
+
+	migrations, err := m.loadMigrations()
+	if err != nil {
+		return false, err
+	}
+
+	for _, migration := range migrations {
+		appliedMigration, migrationApplied := appliedMigrations[migration.rank]
+		if migrationApplied {
+			if appliedMigration.checksum != migration.checksum {
+				return false, fmt.Errorf("checksum mismatch")
+			}
+
+			if appliedMigration.name != migration.name {
+				return false, fmt.Errorf("name mismatch")
+			}
+		} else {
+
+			err = m.applyMigration(tx, migration)
+			if err != nil {
+				return false, err
+			}
+
+			err = m.markMigrationApplied(tx, migration)
+			if err != nil {
+				return false, err
+			}
+
+			err = tx.Commit()
+			if err != nil {
+				return false, err
+			}
+
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
