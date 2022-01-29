@@ -1,6 +1,7 @@
 package internal
 
 import (
+	"bytes"
 	"crypto/md5"
 	"database/sql"
 	"fmt"
@@ -99,10 +100,13 @@ func (m *Migrator) markMigrationApplied(tx *sql.Tx, migration Migration) error {
 
 func (m *Migrator) applyMigration(tx *sql.Tx, migration Migration) error {
 
-	log.Printf("Applying migration %d %s %s", migration.rank, migration.name, migration.checksum)
+	log.Printf("Applying migration rank=%d, name=%s, checksum=%s...", migration.rank, migration.name, migration.checksum)
 
-	script := string(migration.data)
-	statements := strings.Split(strings.ReplaceAll(script, "\r\n", "\n"), "/\n")
+	sqlRd := NewSqlReader(bytes.NewReader(migration.data))
+	statements, err := sqlRd.ReadStatements()
+	if err != nil {
+		return err
+	}
 
 	for _, statement := range statements {
 
@@ -111,7 +115,7 @@ func (m *Migrator) applyMigration(tx *sql.Tx, migration Migration) error {
 			continue
 		}
 
-		log.Printf("Executing '%s'", statement)
+		log.Printf("Executing '%s'...", statement)
 
 		_, err := tx.Exec(statement)
 		if err != nil {
@@ -207,7 +211,7 @@ func (m *Migrator) isDbPostgresql() error {
 
 	version = strings.ToLower(version)
 	if !strings.Contains(version, "postgres") {
-		return fmt.Errorf("only postgresql support")
+		return fmt.Errorf("only postgresql supported")
 	}
 
 	return nil
