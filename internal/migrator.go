@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
-	"io/ioutil"
 	"log"
 	"regexp"
 	"sort"
@@ -97,9 +96,19 @@ func (m *Migrator) loadMigrations() ([]Migration, error) {
 
 	re := regexp.MustCompile("^.*/?V(\\d+)__(.*).sql")
 
+	readDirFs, isReadDirFs := m.fs.(fs.ReadDirFS)
+	if !isReadDirFs {
+		return nil, fmt.Errorf("fs not ReadDir capable")
+	}
+
+	readFileFs, isReadFileFs := m.fs.(fs.ReadFileFS)
+	if !isReadFileFs {
+		return nil, fmt.Errorf("fs not ReadFile capable")
+	}
+
 	migrations := make([]Migration, 0)
 	for _, basePath := range m.migrationPaths {
-		fileInfos, err := ioutil.ReadDir(basePath)
+		fileInfos, err := readDirFs.ReadDir(basePath)
 		if err != nil {
 			return nil, err
 		}
@@ -116,7 +125,7 @@ func (m *Migrator) loadMigrations() ([]Migration, error) {
 			name := match[2]
 
 			path := fmt.Sprintf("%s/%s", basePath, fileInfo.Name())
-			data, err := ioutil.ReadFile(path)
+			data, err := readFileFs.ReadFile(path)
 			if err != nil {
 				return nil, err
 			}
