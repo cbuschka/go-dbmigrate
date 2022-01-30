@@ -89,12 +89,12 @@ func (m *Migrator) applyMigration(tx *sql.Tx, migration Migration) error {
 }
 
 func (m *Migrator) createMigrationSchema() error {
-	_, err := m.db.Exec("create table if not exists Migration ( id bigserial primary key, rank int4 not null unique, name varchar(200) not null unique, checksum varchar(80) not null unique, applied_at timestamp not null)")
+	_, err := m.db.Exec("create table if not exists migration ( id bigserial primary key, rank int4 not null unique, name varchar(200) not null unique, checksum varchar(80) not null unique, applied_at timestamp not null)")
 	return err
 }
 
 func (m *Migrator) selectAppliedMigrations(tx *sql.Tx) (map[int]AppliedMigration, error) {
-	rows, err := tx.Query("select rank, name, checksum from Migration order by rank asc for update")
+	rows, err := tx.Query("select rank, name, checksum from migration order by rank asc for update")
 	if err != nil {
 		return nil, err
 	}
