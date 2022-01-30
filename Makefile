@@ -22,3 +22,6 @@ test:
 
 start-dev-db:
 	docker-compose up -d
+
+stop-dev-db:
+	docker-compose down --remove-orphans

@@ -1,12 +1,18 @@
 package internal
 
-import "strings"
+import (
+	"fmt"
+)
 
 type Migration struct {
 	rank     int
 	name     string
 	data     []byte
 	checksum string
+}
+
+func (m Migration) String() string {
+	return fmt.Sprintf("rank=%d,name=%s,checksum=%s", m.rank, m.name, m.checksum)
 }
 
 type MigrationCollection []Migration
@@ -16,7 +22,7 @@ func (m MigrationCollection) Len() int {
 }
 
 func (m MigrationCollection) Less(i, j int) bool {
-	return strings.Compare(m[i].name, m[j].name) < 0
+	return m[i].rank < m[j].rank
 }
 
 func (m MigrationCollection) Swap(i, j int) {

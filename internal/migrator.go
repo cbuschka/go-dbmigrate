@@ -1,12 +1,10 @@
 package internal
 
 import (
-	"bytes"
 	"database/sql"
 	"fmt"
 	"io/fs"
 	"log"
-	"strings"
 )
 
 type Migrator struct {
@@ -21,15 +19,19 @@ func NewMigrator(db *sql.DB, fs fs.FS, migrationPaths []string) (*Migrator, erro
 
 func (m *Migrator) Migrate() error {
 
-	err := m.isDbPostgresql()
+	err := isDbPostgresql(m.db)
 	if err != nil {
 		return err
 	}
 
-	err = m.createMigrationSchema()
+	log.Print("Migrating migration schema...")
+
+	err = m.createMigrationSchema(m.db)
 	if err != nil {
 		return err
 	}
+
+	log.Print("Migrating database...")
 
 	for {
 		hasMore, err := m.advanceMigration()
@@ -42,100 +44,7 @@ func (m *Migrator) Migrate() error {
 		}
 	}
 
-	return nil
-}
-
-func (m *Migrator) markMigrationApplied(tx *sql.Tx, migration Migration) error {
-
-	stmt, err := tx.Prepare("insert into migration ( rank, name, checksum, applied_at ) values ($1, $2, $3, now())")
-	if err != nil {
-		return err
-	}
-
-	_, err = stmt.Exec(migration.rank, migration.name, migration.checksum)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (m *Migrator) applyMigration(tx *sql.Tx, migration Migration) error {
-
-	log.Printf("Applying migration rank=%d, name=%s, checksum=%s...", migration.rank, migration.name, migration.checksum)
-
-	sqlRd := NewSqlReader(bytes.NewReader(migration.data))
-	statements, err := sqlRd.ReadStatements()
-	if err != nil {
-		return err
-	}
-
-	for _, statement := range statements {
-
-		statement = strings.TrimSpace(statement)
-		if statement == "" {
-			continue
-		}
-
-		log.Printf("Executing '%s'...", statement)
-
-		_, err := tx.Exec(statement)
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func (m *Migrator) createMigrationSchema() error {
-	_, err := m.db.Exec("create table if not exists migration ( id bigserial primary key, rank int4 not null unique, name varchar(200) not null unique, checksum varchar(80) not null unique, applied_at timestamp not null)")
-	return err
-}
-
-func (m *Migrator) selectAppliedMigrations(tx *sql.Tx) (map[int]AppliedMigration, error) {
-	rows, err := tx.Query("select rank, name, checksum from migration order by rank asc for update")
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	appliedMigrations := make(map[int]AppliedMigration, 0)
-	for rows.Next() {
-		var rank int
-		var name string
-		var checksum string
-		err := rows.Scan(&rank, &name, &checksum)
-		if err != nil {
-			return nil, err
-		}
-		appliedMigrations[rank] = AppliedMigration{rank: rank, name: name, checksum: checksum}
-	}
-
-	return appliedMigrations, nil
-}
-
-func (m *Migrator) isDbPostgresql() error {
-	rows, err := m.db.Query("select version()")
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	if !rows.Next() {
-		return fmt.Errorf("no rows")
-	}
-
-	var version string
-	err = rows.Scan(&version)
-	if err != nil {
-		return err
-	}
-
-	version = strings.ToLower(version)
-	if !strings.Contains(version, "postgres") {
-		return fmt.Errorf("only postgresql supported")
-	}
+	log.Print("Migrating finished.")
 
 	return nil
 }
@@ -148,7 +57,7 @@ func (m *Migrator) advanceMigration() (bool, error) {
 	}
 	defer tx.Rollback()
 
-	appliedMigrations, err := m.selectAppliedMigrations(tx)
+	appliedMigrations, err := selectAppliedMigrations(tx)
 	if err != nil {
 		return false, err
 	}
@@ -168,14 +77,18 @@ func (m *Migrator) advanceMigration() (bool, error) {
 			if appliedMigration.name != migration.name {
 				return false, fmt.Errorf("name mismatch")
 			}
+
+			log.Printf("Migration %s OK.", migration.String())
 		} else {
 
-			err = m.applyMigration(tx, migration)
+			log.Printf("Applying migration %s...", migration.String())
+
+			err = applyMigration(tx, migration)
 			if err != nil {
 				return false, err
 			}
 
-			err = m.markMigrationApplied(tx, migration)
+			err = markMigrationApplied(tx, migration)
 			if err != nil {
 				return false, err
 			}
@@ -184,6 +97,8 @@ func (m *Migrator) advanceMigration() (bool, error) {
 			if err != nil {
 				return false, err
 			}
+
+			log.Printf("Migration %s successfully applied.", migration.String())
 
 			return true, nil
 		}
