@@ -2,14 +2,10 @@ package internal
 
 import (
 	"bytes"
-	"crypto/md5"
 	"database/sql"
 	"fmt"
 	"io/fs"
 	"log"
-	"regexp"
-	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -92,56 +88,6 @@ func (m *Migrator) applyMigration(tx *sql.Tx, migration Migration) error {
 	return nil
 }
 
-func (m *Migrator) loadMigrations() ([]Migration, error) {
-
-	re := regexp.MustCompile("^.*/?V(\\d+)__(.*).sql")
-
-	readDirFs, isReadDirFs := m.fs.(fs.ReadDirFS)
-	if !isReadDirFs {
-		return nil, fmt.Errorf("fs not ReadDir capable")
-	}
-
-	readFileFs, isReadFileFs := m.fs.(fs.ReadFileFS)
-	if !isReadFileFs {
-		return nil, fmt.Errorf("fs not ReadFile capable")
-	}
-
-	migrations := make([]Migration, 0)
-	for _, basePath := range m.migrationPaths {
-		fileInfos, err := readDirFs.ReadDir(basePath)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, fileInfo := range fileInfos {
-
-			match := re.FindStringSubmatch(fileInfo.Name())
-
-			rankStr := match[1]
-			rank, err := strconv.Atoi(rankStr)
-			if err != nil {
-				return nil, err
-			}
-			name := match[2]
-
-			path := fmt.Sprintf("%s/%s", basePath, fileInfo.Name())
-			data, err := readFileFs.ReadFile(path)
-			if err != nil {
-				return nil, err
-			}
-
-			checksum := fmt.Sprintf("{md5}%x", md5.Sum(data))
-
-			m := Migration{rank: rank, name: name, data: data, checksum: checksum}
-			migrations = append(migrations, m)
-		}
-	}
-
-	sort.Sort(MigrationCollection(migrations))
-
-	return migrations, nil
-}
-
 func (m *Migrator) createMigrationSchema() error {
 	_, err := m.db.Exec("create table if not exists Migration ( id bigserial primary key, rank int4 not null unique, name varchar(200) not null unique, checksum varchar(80) not null unique, applied_at timestamp not null)")
 	return err
@@ -207,7 +153,7 @@ func (m *Migrator) advanceMigration() (bool, error) {
 		return false, err
 	}
 
-	migrations, err := m.loadMigrations()
+	migrations, err := collectMigrations(m.migrationPaths, m.fs)
 	if err != nil {
 		return false, err
 	}
